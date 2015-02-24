@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <script src="http://code.jquery.com/jquery-latest.min.js" type="text/javascript"></script>
+    <script src="http://underscorejs.org/underscore-min.js" type="text/javascript"></script>
+    <script src="http://backbonejs.org/backbone-min.js"></script>
+    <script src="goio.js"></script>
+  </head>
+
+  <body>
+    <h3>Tests go</h3>
+    <pre id="output"></pre>
+
+    <script>
+      var goio = goio();
+      goio.toto = "toton";
+      console.log(goio.toto);
+
+      var myparams = {
+            'reconnection delay': 200 + Math.round(Math.random()*100),
+            'reconnection limit': 8*1000,
+            'max reconnection attempts': Infinity,
+            'auto connect': false
+      };
+
+      goio.connect("ws://192.168.33.10:8080/ws", myparams);
+      goio.socket.connect();
+
+      goio.socket.on('connection', function(){
+        console.log('connection on goio.socket');
+      });
+
+      goio.socket.on('error', function(){
+        console.log('an error occured on goio.socket');
+      });
+
+      goio.on("connect", console.log('connect triggered on goio'));
+
+      goio.on("message", function(payload){
+        console.log("should write " + payload.ping);
+        $("#output").append((new Date())+ " <== "+payload.ping+"\n")
+      });
+
+
+
+      /*
+      url = 'ws://localhost:4000/ws';
+      c = new WebSocket(url);
+      
+      send = function(data){
+        $("#output").append((new Date())+ " ==> "+data+"\n")
+        c.send(data)
+      }
+
+      c.onmessage = function(msg){
+        $("#output").append((new Date())+ " <== "+msg.data+"\n")
+        console.log(msg)
+      }
+      
+      c.onopen = function(){
+        setInterval( 
+          function(){ send("ping") }
+        , 1000 )
+      }*/
+    </script>
+
+  </body>
+</html>
