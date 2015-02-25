@@ -10,7 +10,8 @@ import (
     "github.com/gorilla/websocket"
     "net/http"
     "log"
-    "time"
+    "encoding/json"
+    //"time"
 )
 
 
@@ -51,7 +52,7 @@ func main() {
 
     //alternative à gin gonic.
     goio := NewGoio()
-    go goio.listen()
+    go goio.listenForSockets()
 
     http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
         wshandler(w, r, goio)
@@ -102,7 +103,7 @@ func wshandler(w http.ResponseWriter, r *http.Request, goio *Goio) {
     count :=0
     NewGoSocket(conn, goio)
 
-    //boucle infinie = base du daemon server
+    //daemon of incoming msg from the front end socket.
     for {
         fmt.Println("reading...%d", count)
         messageType, msg, err := conn.ReadMessage()
@@ -136,13 +137,14 @@ type Goio struct {
     //ALL GoSockets are listed here, returned via sockets() method.
     //goSockets GoSockets
     //rooms: only a recorder of the rooms available, with the nb of GS associated.
-    rooms map[string]int
+    rooms map[string][]*GoSocket
 
     idCount int
     goSockets map[int]*GoSocket
 
-    waitingSockets chan *GoSocket
-    
+    socketsQueue chan *GoSocket
+
+    roomActionsQueue chan RoomAction   
     
 }
 
@@ -150,88 +152,190 @@ func NewGoio() *Goio {
     g := new(Goio)
     g.idCount = 0
     g.goSockets = make(map[int]*GoSocket)
+    g.rooms = make(map [string] []*GoSocket)
 
-    g.waitingSockets = make(chan *GoSocket)
+    g.socketsQueue = make(chan *GoSocket)
+    g.roomActionsQueue = make(chan RoomAction)
 
     return g
 }
 
-func (g *Goio) listen() {
+func (g *Goio) send(roomKey string, message string) {
+    if slgs, ok := g.rooms[roomKey]; ok {
+        for _, gsItem := range slgs {
+            gsItem.conn.WriteMessage(websocket.TextMessage, []byte (message))
+        }
+    }
+}
+
+
+func (g *Goio) listenForSockets() {
     fmt.Println("listening on sockets...")
-    defer close(g.waitingSockets)
-    defer fmt.Println("listen is returning")
+    defer close(g.socketsQueue)
+    defer fmt.Println("exiting the listen task on sockets")
 
     for {
-        x := <- g.waitingSockets
+        x := <- g.socketsQueue
         g.idCount +=1
         x.id = g.idCount
         g.goSockets[x.id] = x
+        x.listenConn()  //starts listening for further data
+
         fmt.Println("a socket gets retrieved from channel. id : %d", x.id)
     }
 }
 
 
+func (g *Goio) listenForRoomActions() {
+    fmt.Println("listening for room actions...")
+    defer close(g.roomActionsQueue)
+    defer fmt.Println("exiting the listen task on room actions")
+
+    for {
+        ra := <- g.roomActionsQueue
+
+        if _, ok := g.rooms[ra.roomKey]; ok { //operate action on existing slice
+            switch (ra.action) {
+
+            case ROOM_ACTION_ADD:
+                //check that it is not already in
+                a := g.rooms[ra.roomKey]
+                found := false
+                for _, gsItem :=range a {
+                    if(gsItem == ra.goSocket) {
+                        found = true
+                    }
+                }
+                if (!found) {
+                    g.rooms[ra.roomKey] = append(g.rooms[ra.roomKey], ra.goSocket)
+                }
+
+            case ROOM_ACTION_REMOVE:
+                a := g.rooms[ra.roomKey]
+                for i, gsItem := range a {
+                    if gsItem == ra.goSocket {
+                        a[i], a[len(a)-1], a = a[len(a)-1], nil, a[:len(a)-1]
+                        g.rooms[ra.roomKey] = a
+                        break
+                    }
+                }
+
+            default:
+                //do nothing.
+            }
+
+        } else { //create the slice in the map with 1 elt
+            fmt.Println("could not find key 'inexistant");
+        }
+    }
+}
+
+func (g *Goio) getSocketById(id int) *GoSocket {
+    if gs, ok := g.goSockets[id]; ok {
+        return gs;
+    }
+    return nil;
+}
+
+
 type GoSocket struct {
     //conn wrapper
-    socket *websocket.Conn
+    conn *websocket.Conn
 
     goio *Goio
 
-    //slice aray of all rooms where the GS is.
-    rooms []string
+    references map[string] string
 
     id int
 
-    //last action timestamp
-    lastUpdated time.Time
+}
+
+//daemon listening to incoming connections
+func (gs *GoSocket) listenConn() {
+    for {
+        fmt.Println("reading...%d", count)
+        messageType, msg, err := gs.conn.ReadMessage()
+        if err != nil {
+            fmt.Println("Failed to read a message: ", err)
+            //NOT BREAK !! if BREAK, we should remove the socket from our rooms and watch.
+            break
+        }
+        t := &Transport{}
+        json.Unmarshal([]byte(str), &t)
+    }
+}
+
+//to be used for such refs as user_id, etc...
+func (gs *GoSocket) addReference(key string, value string) {
+    gs.references[key] = value
+}
+
+func (gs *GoSocket) getReference(key string) string{
+    return gs.references[key]
+}
+
+func (gs *GoSocket) isInRoom(roomKey string) bool {
+    g := gs.goio
+    if slgs, ok := g.rooms[roomKey]; ok {
+        for _, gsItem := range slgs {
+            if (gsItem == gs) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+func (gs *GoSocket) broadcastSend(roomKey string, message string) {
+    if gs.isInRoom(roomKey) {
+        g := gs.goio
+        if slgs, ok := g.rooms[roomKey]; ok {
+            for _, gsItem := range slgs {
+                if (gsItem != gs) {
+                    gsItem.conn.WriteMessage(websocket.TextMessage, []byte (message))
+                }
+            }
+        }
+    }
+}
+
+//this is a concurrent method: many socket may join/leave at the exact same time; the join of 
+//a socket should not block other joins/leave nor other actions (broadcast, emit.)
+func (gs *GoSocket) join(roomKey string) {
+    ra := RoomAction{roomKey, gs, ROOM_ACTION_ADD}
+    gs.goio.roomActionsQueue <- ra
+}
+
+func (gs *GoSocket) leave(roomKey string) {
+    ra := RoomAction{roomKey, gs, ROOM_ACTION_REMOVE}
+    gs.goio.roomActionsQueue <- ra
+}
+
+const ROOM_ACTION_ADD int = 1;
+const ROOM_ACTION_REMOVE int = -1;
+
+type RoomAction struct {
+    roomKey string
+    goSocket *GoSocket
+    action int
 }
 
 func NewGoSocket(conn *websocket.Conn, goio *Goio) *GoSocket {
     gs := new(GoSocket)
     gs.goio = goio
-    gs.socket = conn
-    gs.goio.waitingSockets <- gs 
+    gs.references = make(map [string] string)
+    gs.conn = conn
+    gs.goio.socketsQueue <- gs
     return gs
-
 }
+
+type Transport struct {
+    EventName string        `json:"event_name"`
+    Payload string          `json:"payload"`
+    Conversation int        `json:"conversation"`
+}
+
 /*
-func (g *Goio) sockets() GoSockets {
-    //return all sockets stored y Goio
-    return g.goSockets;
-}
-
-func (g *Goio) addSocket(goSocket GoSocket) {
-    g.goSockets.socket = append(g.goSockets.socket, goSocket)
-}
-
-func (g *Goio) removeSocket(goSocket GoSocket) {
-
-}
-
-
-//to be used like: goio.to('some room').emit('some event'):
-
-func (g *Goio) to(goRoomKey string) GoSockets {
-    x:= g.rooms[goRoomKey]
-    
-
-    sliceSock = []GoSocket
-    s := GoSockets{sliceSock}
-
-    if ( 0 == x) {
-        return s;
-    }
-    
-    for key, sock := range g.goSockets.sockets {
-        if (findStringInSlice(goRoomKey, sock.rooms) != -1) {
-            s.sockets = append(s.sockets, sock)
-        }
-    }
-    return s;
-}
-
-
-
 
 func findStringInSlice(str string, sl *[]string) int{
     index := -1
@@ -243,71 +347,7 @@ func findStringInSlice(str string, sl *[]string) int{
     return index;
 }
 
-//to be used like: socket.join("some room")
-func (gs *GoSocket) join(goRoomKey string) {
-    //create if does not exist
-    x := gs.goio.rooms[goRoomKey]
 
-    if (x == 0) {
-        gs.goio.rooms[goRoomKey] = 1
-
-
-    } else {
-        gs.goio.rooms[goRoomKey] +=1
-    }
-    gs.rooms = append(gs.rooms, goRoomKey)
-    gs.goio.
-}
-
-
-func (gs *GoSocket) leave(goRoomKey string) {
-    x := gs.goio.rooms[goRoomKey]
-    if (x==0) {
-        return;
-    }
-
-    //remove this key from slice.
-    index := findStringInSlice(goRoomKey, gs.rooms)
-    if (index == -1) {
-        return;
-    }
-    gs.goio.rooms = append()
-
-    //decrement count
-    x -=1
-}
-
-type GoRoom struct {
-    id string
-    sockets GoSockets
-
-}
-
-//this is a bunch of sockets on which we can use emit
-type GoSockets struct {
-    sockets []GoSocket
-
-}
-
-
-//to be used like: goio.to("some room").emit("eventName", payload)
-func (gss *GoSockets) emit() {
-    //emit on every socket in the GoSockets bunch
-}
-
-
-//to be used like: goio.sockets.in("some room")
-func (gss *GoSockets) in(goRoomKey string) GoSockets{
-
-}
-
-//returns GoSockets
-func (gs * GoSocket) broadcastTo(goRoomKey string) GoSockets{
-    //test that gs is part of the room
-
-    //emit to all sockets except gs
-
-}
 
 */
 
