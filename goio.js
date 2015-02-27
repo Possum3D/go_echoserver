@@ -28,13 +28,17 @@ Goio.prototype.connect=function(url, params) {
 
             var ret = JSON.parse(msgEvent.data);
             //console.log('ret: '.ret);
-            if ( undefined !==ret.eventName && undefined !== ret.payload) {
-                selfgoio.trigger(ret.eventName, ret.payload);
+            if ( undefined !== ret.event_name && undefined !== ret.payload) {
+
+                if (undefined !== ret.message_id) {
+                    selfgoio.socket.defRecorder.resolveDef(ret.message_id, ret.event_name, ret.payload)
+                }
+                
+                selfgoio.trigger(ret.event_name, ret.payload);
             } else {
                 console.log("error in data format: could not find eventName and/or payload in server event");
             }
         })
-
     } else {
        /*WebSockets are not supported. Try a fallback method like long-polling etc*/
        this.trigger("error")
@@ -42,11 +46,36 @@ Goio.prototype.connect=function(url, params) {
 }
 
 
-Goio.prototype.emit=function(eventName, jsonData) {
-    this.socket.send(eventName, jsonData);
+Goio.prototype.emit=function(eventName, jsonData, optionalDef) {
+    this.socket.send(eventName, jsonData, optionalDef);
 }
 ////////////////////////////////////////////////////////
 
+
+function DefRecorder() {
+    this.defMap = {};
+}
+
+DefRecorder.prototype.defId = 0;
+
+DefRecorder.prototype.registerDef = function(def) {
+    console.log("registering def")
+    DefRecorder.prototype.defId ++;
+    var x = DefRecorder.prototype.defId;
+    this.defMap[x] = def;
+    return x;
+}
+
+DefRecorder.prototype.resolveDef = function(id, eventName, payload) {
+
+    var def = this.defMap[id];
+    if (undefined !== def && 0 !== id) {
+        def.resolve(eventName, payload);
+        delete this.defMap[id]; // pop out the reference.
+    } else {
+        console.log("callback for message_id '" + id + '"not found');
+    }
+}
 
 //this is the wrapper for the websocket. it holds the websocket, and params for reconnection.
 function GoioSocket(url, params) {
@@ -54,16 +83,17 @@ function GoioSocket(url, params) {
     //this.dispatcher = dispatcher;
     //todo: implement these parameters
     this.url = url;
-    this['reconnection delay'] = 200;
+    this['reconnection delay'] = 200;//random
     this['reconnection limit'] = 8000;
     this['max reconnection attempts'] = Infinity;
     this['auto connect'] = false;
 
     this.connected = false;
+    this.defRecorder = new DefRecorder();
 
     _.extend(this, this.dispatcher);
 
-    if (undefined ===params) {
+    if (undefined === params) {
         return;
     }
 
@@ -72,7 +102,6 @@ function GoioSocket(url, params) {
             this[key] = value;
         }
     })
-
 }
 
 _.extend(GoioSocket.prototype, Backbone.Events);
@@ -102,22 +131,20 @@ GoioSocket.prototype.connect=function() {
 }
 
 
-/*
-GoioSocket.prototype.on=function(eventName, callback) {
-    
-    this.websocket.onmessage = function(serverMsg){
-        //extract json : should have an eventName and a body, from serverMsg. mon event should be extracted from serverMsg.
-        data = {"eventName": "monevent", "payload":{}};
-        if(data.eventName == eventName) {
-            callback.apply(arguments)
-        }
+GoioSocket.prototype.send=function(eventName, jsonDataString, optionalDef) {
+
+    if ('string' != typeof jsonDataString || 'string' != typeof jsonDataString) {
+        console.log('event emit refused: type incorrect');
+        return;
     }
 
-}*/
+    var messageId = 0; //0 stands for no message_id 
+    if (undefined != optionalDef) {
+        messageId = this.defRecorder.registerDef(optionalDef);
+    }
+    
 
-GoioSocket.prototype.send=function(eventName, jsonDataString) {
-
-    var pack = window.JSON.stringify({"eventName": eventName, "payload":jsonDataString});
+    var pack = window.JSON.stringify({"event_name": eventName, "message_id": messageId, "payload":jsonDataString});
 
     console.log('sending...' + pack);
     this.websocket.send(pack);

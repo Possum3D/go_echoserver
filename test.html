@@ -36,11 +36,16 @@
 
       goio.on("connect", console.log('connect triggered on goio'));
 
-      goio.on("message", function(payload){
-        console.log("should write " + payload.ping);
-        $("#output").append((new Date())+ " <== "+payload.ping+"\n")
-      });
+      
+      /*
+      goio.on("echo", function(payload){
+        var parsedPayload = JSON.parse(payload);
+        console.log("payload : " + payload)
 
+        console.log("should write " + payload.ping);
+        $("#output").append((new Date())+ " <== "+parsedPayload.ping+"\n")
+      });
+      */
 
 
       /*
